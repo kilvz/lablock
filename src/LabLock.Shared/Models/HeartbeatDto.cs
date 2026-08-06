@@ -9,6 +9,7 @@ public class HeartbeatDto
     public int AgentSessionId { get; set; }
     public string ActiveWindow { get; set; } = "";
     public string ActiveProcess { get; set; } = "";
+    public string AgentVersion { get; set; } = "";
     public double CpuPercent { get; set; }
     public double MemoryPercent { get; set; }
     public long UptimeSeconds { get; set; }

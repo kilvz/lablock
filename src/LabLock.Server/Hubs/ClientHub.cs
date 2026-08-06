@@ -40,6 +40,7 @@ public class ClientHub : Hub
         var apiKey = httpContext.Request.Query["apiKey"].FirstOrDefault();
         var role = httpContext.Request.Query["role"].FirstOrDefault();
         var token = httpContext.Request.Query["token"].FirstOrDefault();
+        var version = httpContext.Request.Query["version"].FirstOrDefault();
 
         if (apiKey == DashboardSecret && role == "dashboard")
         {
@@ -78,6 +79,7 @@ public class ClientHub : Hub
                     ClientId = clientId,
                     ApiKey = apiKey,
                     Hostname = httpContext.Request.Query["hostname"].FirstOrDefault() ?? clientId,
+                    AgentVersion = version ?? "",
                     FirstSeen = DateTime.UtcNow,
                     LastSeen = DateTime.UtcNow,
                     IsActive = true
@@ -89,6 +91,8 @@ public class ClientHub : Hub
                 client.ApiKey = apiKey;
                 client.LastSeen = DateTime.UtcNow;
                 client.IsActive = true;
+                if (!string.IsNullOrEmpty(version))
+                    client.AgentVersion = version;
             }
             await db.SaveChangesWithRetryAsync();
         }
@@ -175,6 +179,8 @@ public class ClientHub : Hub
             client.CpuPercent = dto.CpuPercent;
             client.MemoryPercent = dto.MemoryPercent;
             client.ActiveProcess = dto.ActiveProcess;
+            if (!string.IsNullOrEmpty(dto.AgentVersion))
+                client.AgentVersion = dto.AgentVersion;
         }
         await db.SaveChangesWithRetryAsync();
     }

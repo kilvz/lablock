@@ -128,7 +128,7 @@ public class ConnectionService : BackgroundService
     private async Task ConnectAsync(CancellationToken stoppingToken)
     {
         _connection = new HubConnectionBuilder()
-            .WithUrl($"{_serverUrl}/hub/client?clientId={_clientId}&apiKey={_apiKey}")
+            .WithUrl($"{_serverUrl}/hub/client?clientId={_clientId}&apiKey={_apiKey}&version={GetVersion()}")
             .WithAutomaticReconnect(new[]
             {
                 TimeSpan.FromSeconds(2)
@@ -270,6 +270,7 @@ public class ConnectionService : BackgroundService
                 InteractiveUser = _sessionContext.GetInteractiveUser(),
                 InteractiveSessionId = _sessionContext.GetInteractiveSessionId(),
                 AgentSessionId = _sessionContext.AgentSessionId,
+                AgentVersion = GetVersion(),
                 ActiveWindow = activeTitle,
                 ActiveProcess = activeProcess,
                 CpuPercent = GetCpuUsage(),
@@ -416,6 +417,12 @@ public class ConnectionService : BackgroundService
         {
             _logger.LogError(ex, "Failed to update config");
         }
+    }
+
+    private static string GetVersion()
+    {
+        try { return Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "?"; }
+        catch { return "?"; }
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)

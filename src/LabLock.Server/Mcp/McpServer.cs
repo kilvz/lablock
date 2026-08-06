@@ -705,6 +705,8 @@ public partial class McpServer : IDisposable
             if (c.AgentSessionId != 0)
                 lines.Add($"  Agent session: {c.AgentSessionId}");
             lines.Add($"  OS: {c.OsVersion ?? "-"}");
+            if (!string.IsNullOrEmpty(c.AgentVersion))
+                lines.Add($"  Agent: v{c.AgentVersion}");
             lines.Add($"  IP: {c.IpAddress ?? "-"}");
             lines.Add($"  CPU: {c.CpuPercent:F1}%");
             lines.Add($"  Memory: {c.MemoryPercent:F1}%");
@@ -725,6 +727,7 @@ public partial class McpServer : IDisposable
             $"Interactive: {c.InteractiveUser ?? "-"} (session {c.InteractiveSessionId})",
             $"Agent session: {c.AgentSessionId}",
             $"OS: {c.OsVersion ?? "-"}",
+            $"Agent: v{c.AgentVersion}",
             $"IP: {c.IpAddress ?? "-"}",
             $"CPU: {c.CpuPercent:F1}%",
             $"Memory: {c.MemoryPercent:F1}%",

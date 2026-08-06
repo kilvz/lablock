@@ -115,6 +115,8 @@ public class ClientStateService
             state.MemoryPercent = dto.MemoryPercent;
             state.LastHeartbeat = DateTime.UtcNow;
             state.IsOnline = true;
+            if (!string.IsNullOrEmpty(dto.AgentVersion))
+                state.AgentVersion = dto.AgentVersion;
         }
     }
 
