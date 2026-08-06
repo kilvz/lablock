@@ -12,6 +12,22 @@
 - **MCP public**: `https://lablock.smkn3manado.sch.id/mcp` (Basic Auth: `lablock` / `a305fffd6d0b1c252804d296492cb34c`)
 - **MCP endpoint**: `POST /mcp` (before auth middleware, AllowAnonymous)
 
+## MCP Tool Session Routing (CRITICAL — read before executing commands)
+
+| Tool | Session | User sees it? | Use for |
+|---|---|---|---|
+| `lablock_send_command` | **Session 0 (SYSTEM)** | **NO** — invisible to user | File ops, services, registry, system-level tasks |
+| `lablock_run_user_powershell` | **Interactive session** (session 1/2/3) | **YES** — user sees the window | Client-visible operations: wallpaper, GUI apps, browser, message to user |
+| `lablock_run_elevated_powershell` | Elevated (UAC prompt) | **YES** — UAC popup visible | Admin tasks: driver changes, system config |
+| `lablock_screenshot` | Interactive session | N/A | Screenshots always run in user session |
+| `lablock_message_box` | Interactive session | **YES** | Always visible to user |
+| `lablock_block_screen` | Interactive session | **YES** | Black overlay on user's screen |
+| `lablock_get_active_app` | Interactive session | N/A | Foreground window detection |
+| `lablock_send_keystrokes` | Interactive session | **YES** | Keystroke injection |
+| `lablock_kill_tasks` | Interactive session | **YES** | Kill interactive user processes |
+
+**Rule**: If the user should SEE or INTERACT with the result, use `run_user_powershell`, NEVER `send_command`. `send_command` runs headless in session 0 — the user won't see windows, message boxes, or wallpaper changes. When in doubt, prefer `run_user_powershell`.
+
 ## Client update flow
 
 ### How it works

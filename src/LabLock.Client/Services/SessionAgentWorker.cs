@@ -28,6 +28,7 @@ public static class SessionAgentWorker
     private static readonly List<object> KeyBatch = new();
     private static IntPtr _pipeHandle = IntPtr.Zero;
     private static readonly byte[] ReadBuf = new byte[65536];
+    private static readonly object PipeWriteLock = new();
 
     public static void Run()
     {
@@ -65,8 +66,23 @@ public static class SessionAgentWorker
                     if (bytesRead == 0) continue;
 
                     var json = Encoding.UTF8.GetString(ReadBuf, 0, (int)bytesRead);
-                    var response = Dispatch(json);
-                    SendPipe(response);
+
+                    ThreadPool.QueueUserWorkItem(_ =>
+                    {
+                        try
+                        {
+                            var response = Dispatch(json);
+                            SendPipe(response);
+                        }
+                        catch (Exception ex)
+                        {
+                            var errId = "";
+                            try { using var doc = JsonDocument.Parse(json); errId = doc.RootElement.GetProperty("id").GetString() ?? ""; }
+                            catch { }
+                            try { SendPipe(new { type = "response", id = errId, success = false, error = ex.Message }); }
+                            catch { }
+                        }
+                    });
                 }
                 catch
                 {
@@ -127,17 +143,35 @@ public static class SessionAgentWorker
 
     private static object TakeScreenshot()
     {
-        var screen = Screen.PrimaryScreen;
-        if (screen == null) throw new Exception("No primary screen");
+        object? result = null;
+        Exception? error = null;
+        var done = new ManualResetEventSlim();
 
-        var bounds = screen.Bounds;
-        using var bitmap = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format24bppRgb);
-        using var g = Graphics.FromImage(bitmap);
-        g.CopyFromScreen(bounds.X, bounds.Y, 0, 0, bounds.Size);
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            try
+            {
+                var screen = Screen.PrimaryScreen;
+                if (screen == null) throw new Exception("No primary screen");
 
-        using var ms = new MemoryStream();
-        bitmap.Save(ms, ImageFormat.Jpeg);
-        return new { imageBase64 = Convert.ToBase64String(ms.ToArray()), width = bounds.Width, height = bounds.Height, format = "jpeg" };
+                var bounds = screen.Bounds;
+                using var bitmap = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format24bppRgb);
+                using var g = Graphics.FromImage(bitmap);
+                g.CopyFromScreen(bounds.X, bounds.Y, 0, 0, bounds.Size);
+
+                using var ms = new MemoryStream();
+                bitmap.Save(ms, ImageFormat.Jpeg);
+                result = new { imageBase64 = Convert.ToBase64String(ms.ToArray()), width = bounds.Width, height = bounds.Height, format = "jpeg" };
+            }
+            catch (Exception ex) { error = ex; }
+            finally { done.Set(); }
+        });
+
+        if (!done.Wait(TimeSpan.FromSeconds(20)))
+            throw new TimeoutException("Screenshot timed out after 20s");
+
+        if (error != null) throw error;
+        return result!;
     }
 
     private static object GetActiveApp()
@@ -384,8 +418,11 @@ public static class SessionAgentWorker
     {
         var json = JsonSerializer.Serialize(obj, JsonOpts) + "\n";
         var bytes = Encoding.UTF8.GetBytes(json);
-        if (!NativeMethods.WriteFile(_pipeHandle, bytes, (uint)bytes.Length, out _, IntPtr.Zero))
-            throw new Exception($"Pipe write failed: {Marshal.GetLastWin32Error()}");
+        lock (PipeWriteLock)
+        {
+            if (!NativeMethods.WriteFile(_pipeHandle, bytes, (uint)bytes.Length, out _, IntPtr.Zero))
+                throw new Exception($"Pipe write failed: {Marshal.GetLastWin32Error()}");
+        }
     }
 
     private static object RunPowerShell(JsonElement args)
