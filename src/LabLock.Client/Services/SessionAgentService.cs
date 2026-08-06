@@ -203,13 +203,29 @@ public class SessionAgentService : IDisposable
 
         try
         {
-            lock (_sendLock)
+            var payload = JsonSerializer.Serialize(request, JsonOpts) + "\n";
+            var bytes = Encoding.UTF8.GetBytes(payload);
+
+            var writeTimeoutMs = Math.Min(timeoutMs, 10000);
+            var writeCts = new CancellationTokenSource();
+            var writeTask = Task.Run(() =>
             {
-                var payload = JsonSerializer.Serialize(request, JsonOpts) + "\n";
-                var bytes = Encoding.UTF8.GetBytes(payload);
-                if (!NativeMethods.WriteFile(_pipeHandle, bytes, (uint)bytes.Length, out _, IntPtr.Zero))
-                    throw new Exception($"Pipe write failed: {Marshal.GetLastWin32Error()}");
+                lock (_sendLock)
+                {
+                    if (writeCts.IsCancellationRequested) return;
+                    NativeMethods.WriteFile(_pipeHandle, bytes, (uint)bytes.Length, out _, IntPtr.Zero);
+                }
+            });
+
+            var writeWinner = await Task.WhenAny(writeTask, Task.Delay(writeTimeoutMs));
+            if (writeWinner != writeTask)
+            {
+                writeCts.Cancel();
+                KillAgent();
+                throw new TimeoutException($"Session agent pipe write timed out after {writeTimeoutMs}ms — agent was killed");
             }
+
+            await writeTask;
 
             var winner = await Task.WhenAny(tcs.Task, Task.Delay(timeoutMs));
             if (winner != tcs.Task)
