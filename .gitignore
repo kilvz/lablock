@@ -8,6 +8,8 @@ obj/
 NUL
 nulnecho
 payload.json
+src/LabLock.Installer/payload/
+src/LabLock.ClientSetup/payload/
 *.ps1
 run.sh
 node_modules/
