@@ -1,0 +1,13 @@
+publish/
+bin/
+obj/
+*.user
+.vs/
+.playwright-mcp/
+*.session.*
+NUL
+nulnecho
+payload.json
+*.ps1
+run.sh
+node_modules/

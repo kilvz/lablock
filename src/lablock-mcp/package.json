@@ -1,0 +1,18 @@
+{
+  "name": "lablock-mcp",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "MCP server for LabLock - manage remote clients via opencode",
+  "bin": {
+    "lablock-mcp": "./index.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.9.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  }
+}
