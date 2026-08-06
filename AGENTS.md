@@ -28,6 +28,24 @@
 
 **Rule**: If the user should SEE or INTERACT with the result, use `run_user_powershell`, NEVER `send_command`. `send_command` runs headless in session 0 — the user won't see windows, message boxes, or wallpaper changes. When in doubt, prefer `run_user_powershell`.
 
+### Session routing also baked into MCP tool descriptions
+The .NET server's `McpServer.cs` and the TypeScript bridge `lablock-mcp/index.ts` both have explicit session-routing annotations in every tool description. If the AI still routes commands to the wrong session, the tool descriptions are definitive.
+
+## 1.4.6 fix — multithreaded session agent worker
+
+### Problem
+Commands timed out intermittently (screenshot, block_screen, message_box, etc.). Root cause: `SessionAgentWorker` read thread processed commands **synchronously inline** — a `run_powershell` command blocked the read thread for its entire duration (up to 60s). All subsequent commands queued in the pipe buffer until the first command completed, causing server-side timeouts.
+
+### Fix (SessionAgentWorker.cs)
+1. **ThreadPool dispatch** — read thread now does `ThreadPool.QueueUserWorkItem(_ => { var response = Dispatch(json); SendPipe(response); })` and immediately loops to read the next command. Commands execute concurrently on separate threads.
+2. **Thread-safe SendPipe** — `lock (PipeWriteLock)` protects concurrent `WriteFile` calls from multiple response threads.
+3. **TakeScreenshot 20s timeout** — `CopyFromScreen` can hang indefinitely on locked/inaccessible desktops; now has a hard 20s cap via `ManualResetEventSlim.Wait()`.
+
+### Deployed
+- Client v1.4.6 built, uploaded to Alpine, pushed to all 20 clients
+- Server rebuilt with updated MCP tool descriptions (session routing per tool)
+- TypeScript MCP bridge (lablock-mcp) updated with 9 missing interactive tools + fixed descriptions
+
 ## Client update flow
 
 ### How it works
