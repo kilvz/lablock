@@ -149,7 +149,7 @@ public partial class McpServer : IDisposable
             new
             {
                 name = "lablock_send_command",
-                description = "Send a command to a specific LabLock client for remote execution. Use for client-side operations like lock, shutdown, restart, or custom PowerShell.",
+                description = "Send a command to a specific LabLock client for remote execution. Runs as NT AUTHORITY\\SYSTEM in session 0 (INVISIBLE to user — the user will NOT see any windows, message boxes, or UI). Use ONLY for headless system tasks: file ops, services, registry, background processes. For user-visible operations use lablock_run_user_powershell instead.",
                 inputSchema = new
                 {
                     type = "object",
@@ -239,19 +239,19 @@ public partial class McpServer : IDisposable
             new
             {
                 name = "lablock_screenshot",
-                description = "Take a screenshot of a client's screen. Returns base64 JPEG image data.",
+                description = "Take a screenshot of a client's screen (captures the USER'S interactive desktop, not session 0). Returns base64 JPEG image data.",
                 inputSchema = new { type = "object", properties = new { clientId = new { type = "string", description = "Client ID" } }, required = new[] { "clientId" } }
             },
             new
             {
                 name = "lablock_get_active_app",
-                description = "Get the foreground window title and process name on a client",
+                description = "Get the foreground window title and process name on a client (reads from the USER'S interactive session)",
                 inputSchema = new { type = "object", properties = new { clientId = new { type = "string", description = "Client ID" } }, required = new[] { "clientId" } }
             },
             new
             {
                 name = "lablock_message_box",
-                description = "Show a message box on a client's screen. Buttons: OK, OKCancel, YesNo, YesNoCancel, AbortRetryIgnore, RetryCancel. Icon: Information, Warning, Error, Question.",
+                description = "Show a message box on a client's screen (VISIBLE in the USER'S interactive session — the user sees it immediately). Buttons: OK, OKCancel, YesNo, YesNoCancel, AbortRetryIgnore, RetryCancel. Icon: Information, Warning, Error, Question.",
                 inputSchema = new
                 {
                     type = "object",
@@ -269,7 +269,7 @@ public partial class McpServer : IDisposable
             new
             {
                 name = "lablock_interactive_message",
-                description = "Show an interactive message box on a client. The user can type a reply and send it back.",
+                description = "Show an interactive message box on a client's USER session. The user CAN see it, type a reply, and send it back. Visible UI element.",
                 inputSchema = new
                 {
                     type = "object",
@@ -289,7 +289,7 @@ public partial class McpServer : IDisposable
             new
             {
                 name = "lablock_block_screen",
-                description = "Block or unblock a client's screen (shows a black full-screen overlay)",
+                description = "Block or unblock a client's screen in the USER'S interactive session (shows a black full-screen overlay the user CAN see)",
                 inputSchema = new
                 {
                     type = "object",
@@ -304,7 +304,7 @@ public partial class McpServer : IDisposable
             new
             {
                 name = "lablock_kill_tasks",
-                description = "Kill processes by name on a client (runs in user session, can kill interactive apps)",
+                description = "Kill processes by name on a client (runs in the USER'S interactive session, can kill visible/interactive apps like browsers, games, etc.)",
                 inputSchema = new
                 {
                     type = "object",
@@ -319,7 +319,7 @@ public partial class McpServer : IDisposable
             new
             {
                 name = "lablock_send_keystrokes",
-                description = "Send keystrokes to a client (runs in user session). Supports SendKeys format: 'ctrl+c', 'hello world', '{ENTER}', '^(c)' (ctrl+c).",
+                description = "Send keystrokes to a client's USER interactive session. Keystrokes are injected into the user's visible desktop. Supports SendKeys format: 'ctrl+c', 'hello world', '{ENTER}', '^(c)' (ctrl+c).",
                 inputSchema = new
                 {
                     type = "object",
@@ -334,7 +334,7 @@ public partial class McpServer : IDisposable
             new
             {
                 name = "lablock_run_user_powershell",
-                description = "Run a PowerShell command in the user's interactive session (non-elevated, user privileges). Output is fully captured.",
+                description = "Run a PowerShell command in the USER'S INTERACTIVE SESSION (session 1/2/3). The user CAN see windows, dialogs, and UI changes. Use for: showing messages, opening browsers, changing wallpaper, launching GUI apps, or any operation the user should see. Output is fully captured. Runs with user-level privileges (non-elevated).",
                 inputSchema = new
                 {
                     type = "object",
@@ -350,7 +350,7 @@ public partial class McpServer : IDisposable
             new
             {
                 name = "lablock_run_elevated_powershell",
-                description = "Run an elevated PowerShell command on a client (UAC prompt, ADMIN privileges). Output is NOT captured — use for actions like disable/enable drivers, registry changes.",
+                description = "Run an elevated PowerShell command on a client via UAC. User WILL see a UAC consent prompt. Runs with ADMIN privileges in the user's session. Output is NOT captured (UAC elevation prevents stdout redirection). Use for admin-only tasks: driver changes, system config, registry under HKLM. For user-visible non-admin tasks, use lablock_run_user_powershell instead.",
                 inputSchema = new
                 {
                     type = "object",
