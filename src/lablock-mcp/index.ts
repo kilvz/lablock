@@ -92,7 +92,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "lablock_send_command",
-      description: "Send a command to a specific LabLock client for remote execution. The client executes it on its machine. Use for client-side operations like lock, shutdown, restart, or custom PowerShell.",
+      description: "Send a command to a specific LabLock client for remote execution. Runs as NT AUTHORITY\\SYSTEM in session 0 (INVISIBLE to user — they will NOT see any windows, UI, or desktop changes). Use ONLY for headless system tasks: file ops, services, registry, background processes. For user-visible operations use lablock_run_user_powershell instead.",
       inputSchema: {
         type: "object",
         properties: {
@@ -174,6 +174,118 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         type: "object",
         properties: { clientId: { type: "string", description: "Target client ID (must be online)" } },
         required: ["clientId"],
+      },
+    },
+    {
+      name: "lablock_screenshot",
+      description: "Take a screenshot of a client's screen (captures the USER'S interactive desktop, not session 0). Returns base64 JPEG image data.",
+      inputSchema: {
+        type: "object",
+        properties: { clientId: { type: "string", description: "Client ID" } },
+        required: ["clientId"],
+      },
+    },
+    {
+      name: "lablock_get_active_app",
+      description: "Get the foreground window title and process name on a client (reads from the USER'S interactive session)",
+      inputSchema: {
+        type: "object",
+        properties: { clientId: { type: "string", description: "Client ID" } },
+        required: ["clientId"],
+      },
+    },
+    {
+      name: "lablock_message_box",
+      description: "Show a message box on a client's screen (VISIBLE in the USER'S interactive session — the user sees it immediately). Buttons: OK, OKCancel, YesNo, YesNoCancel, AbortRetryIgnore, RetryCancel. Icon: Information, Warning, Error, Question.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          clientId: { type: "string", description: "Client ID" },
+          title: { type: "string", description: "Dialog title" },
+          message: { type: "string", description: "Message text" },
+          buttons: { type: "string", description: "Button set: OK, OKCancel, YesNo, YesNoCancel, AbortRetryIgnore, RetryCancel" },
+          icon: { type: "string", description: "Icon: Information, Warning, Error, Question" },
+        },
+        required: ["clientId", "message"],
+      },
+    },
+    {
+      name: "lablock_interactive_message",
+      description: "Show an interactive message box on a client's USER session. The user CAN see it, type a reply, and send it back. Visible UI element.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          clientId: { type: "string", description: "Client ID" },
+          title: { type: "string", description: "Dialog title" },
+          message: { type: "string", description: "Message text" },
+          placeholder: { type: "string", description: "Placeholder text in the reply field" },
+          allowEmpty: { type: "boolean", description: "Allow empty replies (default false)" },
+          topMost: { type: "boolean", description: "Keep dialog on top (default true)" },
+          timeoutMs: { type: "number", description: "Timeout in milliseconds (default 60000)" },
+        },
+        required: ["clientId", "message"],
+      },
+    },
+    {
+      name: "lablock_block_screen",
+      description: "Block or unblock a client's screen in the USER'S interactive session (shows a black full-screen overlay the user CAN see)",
+      inputSchema: {
+        type: "object",
+        properties: {
+          clientId: { type: "string", description: "Client ID" },
+          enable: { type: "boolean", description: "true=block, false=unblock" },
+        },
+        required: ["clientId", "enable"],
+      },
+    },
+    {
+      name: "lablock_kill_tasks",
+      description: "Kill processes by name on a client (runs in the USER'S interactive session, can kill visible/interactive apps like browsers, games, etc.)",
+      inputSchema: {
+        type: "object",
+        properties: {
+          clientId: { type: "string", description: "Client ID" },
+          processNames: { type: "array", items: { type: "string" }, description: "Process names to kill (e.g. ['notepad','chrome'])" },
+        },
+        required: ["clientId", "processNames"],
+      },
+    },
+    {
+      name: "lablock_send_keystrokes",
+      description: "Send keystrokes to a client's USER interactive session. Keystrokes are injected into the user's visible desktop. Supports SendKeys format: 'ctrl+c', 'hello world', '{ENTER}', '^(c)' (ctrl+c).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          clientId: { type: "string", description: "Client ID" },
+          keys: { type: "string", description: "Keystrokes to send (SendKeys format)" },
+        },
+        required: ["clientId", "keys"],
+      },
+    },
+    {
+      name: "lablock_run_user_powershell",
+      description: "Run a PowerShell command in the USER'S INTERACTIVE SESSION (session 1/2/3). The user CAN see windows, dialogs, and UI changes. Use for: showing messages, opening browsers, changing wallpaper, launching GUI apps, or any operation the user should see. Output is fully captured. Runs with user-level privileges (non-elevated).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          clientId: { type: "string", description: "Client ID" },
+          command: { type: "string", description: "PowerShell command to execute (user-visible)" },
+          timeoutSeconds: { type: "number", description: "Timeout in seconds (default 60)" },
+        },
+        required: ["clientId", "command"],
+      },
+    },
+    {
+      name: "lablock_run_elevated_powershell",
+      description: "Run an elevated PowerShell command on a client via UAC. User WILL see a UAC consent prompt. Runs with ADMIN privileges in the user's session. Output is NOT captured (UAC elevation prevents stdout redirection). Use for admin-only tasks: driver changes, system config, registry under HKLM. For user-visible non-admin tasks, use lablock_run_user_powershell instead.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          clientId: { type: "string", description: "Client ID" },
+          command: { type: "string", description: "PowerShell command to execute as admin" },
+          timeoutSeconds: { type: "number", description: "Timeout in seconds (default 60)" },
+        },
+        required: ["clientId", "command"],
       },
     },
   ],
@@ -343,6 +455,121 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         return {
           content: [{ type: "text", text: `Update pushed to ${clientId} (version ${data.version || "?"}). Agent will download and restart.` }],
         };
+      }
+
+      case "lablock_screenshot": {
+        const { clientId } = args as { clientId: string };
+        const data = await apiFetch(`/api/clients/${encodeURIComponent(clientId)}/interactive`, {
+          method: "POST",
+          body: JSON.stringify({ action: "screenshot", timeoutMs: 30000 }),
+        });
+        return { content: [{ type: "text", text: data.output || "(no output)" }] };
+      }
+
+      case "lablock_get_active_app": {
+        const { clientId } = args as { clientId: string };
+        const data = await apiFetch(`/api/clients/${encodeURIComponent(clientId)}/interactive`, {
+          method: "POST",
+          body: JSON.stringify({ action: "get_active_app", timeoutMs: 10000 }),
+        });
+        return { content: [{ type: "text", text: data.output || "(no output)" }] };
+      }
+
+      case "lablock_message_box": {
+        const { clientId, title, message, buttons, icon } = args as Record<string, any>;
+        const data = await apiFetch(`/api/clients/${encodeURIComponent(clientId)}/interactive`, {
+          method: "POST",
+          body: JSON.stringify({
+            action: "message_box",
+            parameters: JSON.stringify({ title: title || "LabLock", message, buttons: buttons || "OK", icon: icon || "Information" }),
+            timeoutMs: 30000,
+          }),
+        });
+        return { content: [{ type: "text", text: data.output || "(no output)" }] };
+      }
+
+      case "lablock_interactive_message": {
+        const params = args as Record<string, any>;
+        const data = await apiFetch(`/api/clients/${encodeURIComponent(params.clientId)}/interactive`, {
+          method: "POST",
+          body: JSON.stringify({
+            action: "interactive_message",
+            parameters: JSON.stringify({
+              title: params.title || "LabLock",
+              message: params.message,
+              placeholder: params.placeholder || "Type your reply...",
+              allowEmpty: params.allowEmpty || false,
+              topMost: params.topMost !== false,
+            }),
+            timeoutMs: params.timeoutMs || 60000,
+          }),
+        });
+        return { content: [{ type: "text", text: data.output || "(no output)" }] };
+      }
+
+      case "lablock_block_screen": {
+        const { clientId, enable } = args as { clientId: string; enable: boolean };
+        const data = await apiFetch(`/api/clients/${encodeURIComponent(clientId)}/interactive`, {
+          method: "POST",
+          body: JSON.stringify({
+            action: "block_screen",
+            parameters: JSON.stringify({ enable }),
+            timeoutMs: 15000,
+          }),
+        });
+        return { content: [{ type: "text", text: data.output || "(no output)" }] };
+      }
+
+      case "lablock_kill_tasks": {
+        const { clientId, processNames } = args as { clientId: string; processNames: string[] };
+        const data = await apiFetch(`/api/clients/${encodeURIComponent(clientId)}/interactive`, {
+          method: "POST",
+          body: JSON.stringify({
+            action: "kill_tasks",
+            parameters: JSON.stringify({ processNames }),
+            timeoutMs: 30000,
+          }),
+        });
+        return { content: [{ type: "text", text: data.output || "(no output)" }] };
+      }
+
+      case "lablock_send_keystrokes": {
+        const { clientId, keys } = args as { clientId: string; keys: string };
+        const data = await apiFetch(`/api/clients/${encodeURIComponent(clientId)}/interactive`, {
+          method: "POST",
+          body: JSON.stringify({
+            action: "send_keystrokes",
+            parameters: JSON.stringify({ keys }),
+            timeoutMs: 15000,
+          }),
+        });
+        return { content: [{ type: "text", text: data.output || "(no output)" }] };
+      }
+
+      case "lablock_run_user_powershell": {
+        const { clientId, command, timeoutSeconds } = args as Record<string, any>;
+        const data = await apiFetch(`/api/clients/${encodeURIComponent(clientId)}/interactive`, {
+          method: "POST",
+          body: JSON.stringify({
+            action: "run_powershell",
+            parameters: JSON.stringify({ command, elevated: false, timeoutSeconds: timeoutSeconds || 60 }),
+            timeoutMs: (timeoutSeconds || 60) * 1000 + 5000,
+          }),
+        });
+        return { content: [{ type: "text", text: data.output || "(no output)" }] };
+      }
+
+      case "lablock_run_elevated_powershell": {
+        const { clientId, command, timeoutSeconds } = args as Record<string, any>;
+        const data = await apiFetch(`/api/clients/${encodeURIComponent(clientId)}/interactive`, {
+          method: "POST",
+          body: JSON.stringify({
+            action: "run_powershell",
+            parameters: JSON.stringify({ command, elevated: true, timeoutSeconds: timeoutSeconds || 60 }),
+            timeoutMs: (timeoutSeconds || 60) * 1000 + 5000,
+          }),
+        });
+        return { content: [{ type: "text", text: data.output || "(no output)" }] };
       }
 
       default:
