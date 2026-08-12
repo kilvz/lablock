@@ -302,7 +302,23 @@ public static class NativeMethods
     [DllImport("kernel32.dll")]
     public static extern bool DisconnectNamedPipe(IntPtr hNamedPipe);
 
-    public const uint PIPE_ACCESS_DUPLEX = 0x00000003;
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool ConvertStringSecurityDescriptorToSecurityDescriptor(
+        string StringSecurityDescriptor, uint StringSDRevision,
+        out IntPtr SecurityDescriptor, out uint SecurityDescriptorSize);
+
+    [DllImport("kernel32.dll")]
+    public static extern IntPtr LocalFree(IntPtr hMem);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct SECURITY_ATTRIBUTES
+    {
+        public uint nLength;
+        public IntPtr lpSecurityDescriptor;
+        public bool bInheritHandle;
+    }
+
+    public const uint PIPE_ACCESS_DUPLEX = 0x00000003; // FILE_READ_DATA | FILE_WRITE_DATA
     public const uint PIPE_TYPE_MESSAGE = 0x00000004;
     public const uint PIPE_READMODE_MESSAGE = 0x00000002;
     public const uint PIPE_WAIT = 0x00000000;

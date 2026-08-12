@@ -142,36 +142,56 @@ public class ConnectionService : BackgroundService
             await _connection.InvokeAsync("ReportCommandResult", result);
         });
 
-        _connection.On<JsonElement>("ExecuteInteractive", async (requestEl) =>
+        _connection.On<Dictionary<string, System.Text.Json.JsonElement>>("ExecuteInteractive", async (payload) =>
         {
+            var logPath = @"C:\LabLock\logs\lablock-svc2.log";
+            try { Directory.CreateDirectory(Path.GetDirectoryName(logPath)!); } catch { }
+            File.AppendAllText(logPath, $"[{DateTime.UtcNow:O}] [Interactive] FIRED payload keys={string.Join(",", payload.Keys)}\n");
             try
             {
-                var requestId = requestEl.TryGetProperty("requestId", out var rid) ? rid.GetString() ?? "" : "";
-                var action = requestEl.GetProperty("action").GetString() ?? "";
+                var action = payload.TryGetValue("action", out var a) ? a.GetString() ?? "" : "";
+                var requestId = payload.TryGetValue("requestId", out var r) ? r.GetString() ?? "" : "";
+                File.AppendAllText(logPath, $"[{DateTime.UtcNow:O}] [Interactive] action={action} requestId={requestId}\n");
                 var paramsDict = new Dictionary<string, object?>();
-                if (requestEl.TryGetProperty("params", out var p) && p.ValueKind == JsonValueKind.Object)
+                if (payload.TryGetValue("params", out var p) && p.ValueKind == JsonValueKind.Object)
                 {
                     foreach (var kvp in p.EnumerateObject())
                         paramsDict[kvp.Name] = kvp.Value;
                 }
-                var timeoutMs = requestEl.TryGetProperty("timeoutMs", out var t) ? t.GetInt32() : 30000;
+                var timeoutMs = payload.TryGetValue("timeoutMs", out var t) && t.TryGetInt32(out var tms) ? tms : 30000;
 
-                var result = await _sessionAgent.SendAsync(action, paramsDict, timeoutMs);
-                var resultText = result.ValueKind == JsonValueKind.Undefined ? "{}" : result.GetRawText();
+                var resultJson = "";
+                var isElevated = paramsDict.TryGetValue("elevated", out var ev) && ev is System.Text.Json.JsonElement ej && ej.ValueKind == JsonValueKind.True;
+
+                if (action == "run_powershell" && isElevated)
+                {
+                    var cmd = paramsDict.TryGetValue("command", out var c) && c is JsonElement cj ? cj.GetString() ?? "" : "";
+                    File.AppendAllText(logPath, $"[{DateTime.UtcNow:O}] [Interactive] elevated run_powershell via Task Scheduler\n");
+                    resultJson = _sessionAgent.RunElevatedPowerShell(cmd, timeoutMs / 1000);
+                    File.AppendAllText(logPath, $"[{DateTime.UtcNow:O}] [Interactive] elevated run_powershell done\n");
+                }
+                else
+                {
+                    resultJson = await _sessionAgent.SendAsync(action, paramsDict, timeoutMs);
+                    File.AppendAllText(logPath, $"[{DateTime.UtcNow:O}] [Interactive] SendAsync succeeded action={action}\n");
+                }
+
                 await _connection.InvokeAsync("ReportInteractiveResult", new Dictionary<string, object?>
                 {
                     ["requestId"] = requestId,
                     ["success"] = true,
-                    ["result"] = resultText
+                    ["result"] = resultJson
                 });
             }
             catch (Exception ex)
             {
+                File.AppendAllText(@"C:\LabLock\logs\lablock-svc2.log",
+                    $"[{DateTime.UtcNow:O}] [Interactive] error: {ex.GetType().Name}: {ex.Message}\n");
                 await _connection.InvokeAsync("ReportInteractiveResult", new Dictionary<string, object?>
                 {
-                    ["requestId"] = "",
+                    ["requestId"] = "error",
                     ["success"] = false,
-                    ["result"] = $"ERROR: {ex.Message}"
+                    ["result"] = $"ERROR: {ex.GetType().Name}: {ex.Message}"
                 });
             }
         });

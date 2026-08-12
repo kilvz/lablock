@@ -12,7 +12,9 @@ if (args.Contains("--active-app-helper"))
 
 if (args.Contains("--session-agent"))
 {
-    SessionAgentWorker.Run();
+    var idx = Array.FindIndex(args, a => a == "--session-agent");
+    var pipeName = idx >= 0 && idx + 1 < args.Length ? args[idx + 1] : null;
+    SessionAgentWorker.Run(pipeName);
     return;
 }
 

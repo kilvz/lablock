@@ -165,8 +165,7 @@ public class CommandService
 
         try
         {
-            await _hubContext.Clients.Client(connId).SendAsync("ExecuteInteractive",
-                System.Text.Json.JsonSerializer.Serialize(payload));
+            await _hubContext.Clients.Client(connId).SendAsync("ExecuteInteractive", (object)payload);
 
             using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(timeoutMs + 5000));
             cts.Token.Register(() => tcs.TrySetCanceled());

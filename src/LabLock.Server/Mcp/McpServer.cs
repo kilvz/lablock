@@ -24,6 +24,27 @@ public partial class McpServer : IDisposable
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
+    private static TimeZoneInfo? _displayTz;
+    private static readonly object TzLock = new();
+    private static TimeZoneInfo DisplayTimeZone
+    {
+        get
+        {
+            if (_displayTz != null) return _displayTz;
+            lock (TzLock)
+            {
+                if (_displayTz != null) return _displayTz;
+                var id = Environment.GetEnvironmentVariable("LABLOCK_DISPLAY_TIMEZONE") ?? "Asia/Manado";
+                try { _displayTz = TimeZoneInfo.FindSystemTimeZoneById(id); }
+                catch { _displayTz = TimeZoneInfo.CreateCustomTimeZone("Manado", TimeSpan.FromHours(8), "Manado", "Manado"); }
+                return _displayTz;
+            }
+        }
+    }
+
+    private static string Fmt(DateTime utc) =>
+        TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(utc, DateTimeKind.Utc), DisplayTimeZone).ToString("yyyy-MM-dd HH:mm:ss");
+
     public McpServer(IServiceProvider services, TextReader? stdin = null, TextWriter? stdout = null, TextWriter? stderr = null)
     {
         _services = services;
@@ -447,13 +468,14 @@ public partial class McpServer : IDisposable
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSec));
-            var psi = new System.Diagnostics.ProcessStartInfo("powershell.exe", $"-NoProfile -Command \"{command.Replace("\"", "\\\"")}\"")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
+            var isWindows = OperatingSystem.IsWindows();
+            var psi = isWindows
+                ? new System.Diagnostics.ProcessStartInfo("powershell.exe", $"-NoProfile -Command \"{command.Replace("\"", "\\\"")}\"")
+                : new System.Diagnostics.ProcessStartInfo("/bin/sh", $"-c \"{command.Replace("\"", "\\\"")}\"");
+            psi.RedirectStandardOutput = true;
+            psi.RedirectStandardError = true;
+            psi.UseShellExecute = false;
+            psi.CreateNoWindow = true;
             var proc = System.Diagnostics.Process.Start(psi);
             if (proc == null) return McpText("ERROR: Failed to start process");
             var stdout = await proc.StandardOutput.ReadToEndAsync(cts.Token);
@@ -711,7 +733,7 @@ public partial class McpServer : IDisposable
             lines.Add($"  CPU: {c.CpuPercent:F1}%");
             lines.Add($"  Memory: {c.MemoryPercent:F1}%");
             lines.Add($"  Active: {c.ActiveProcess ?? "-"}");
-            lines.Add($"  Last Seen: {c.LastHeartbeat:yyyy-MM-dd HH:mm:ss}\n");
+            lines.Add($"  Last Seen: {Fmt(c.LastHeartbeat)}\n");
         }
         return string.Join("\n", lines);
     }
@@ -732,8 +754,8 @@ public partial class McpServer : IDisposable
             $"CPU: {c.CpuPercent:F1}%",
             $"Memory: {c.MemoryPercent:F1}%",
             $"Active Process: {c.ActiveProcess ?? "-"}",
-            $"First Seen: {c.FirstSeen:yyyy-MM-dd HH:mm:ss}",
-            $"Last Seen: {c.LastHeartbeat:yyyy-MM-dd HH:mm:ss}");
+            $"First Seen: {Fmt(c.FirstSeen)}",
+            $"Last Seen: {Fmt(c.LastHeartbeat)}");
     }
 
     private static string FormatLogList(List<ActivityLog> logs, int total, int page, int pageSize)
@@ -743,7 +765,7 @@ public partial class McpServer : IDisposable
         var lines = new List<string> { $"Total: {total} | Page: {page}/{totalPages}\n" };
         foreach (var log in logs)
         {
-            lines.Add($"[{log.Timestamp:yyyy-MM-dd HH:mm:ss}] {log.EventType} | {log.ClientId}" +
+            lines.Add($"[{Fmt(log.Timestamp)}] {log.EventType} | {log.ClientId}" +
                 (string.IsNullOrEmpty(log.ProcessName) ? "" : $" | {log.ProcessName}") +
                 (string.IsNullOrEmpty(log.WindowTitle) ? "" : $" | \"{log.WindowTitle}\""));
             if (!string.IsNullOrEmpty(log.Details))
@@ -758,7 +780,7 @@ public partial class McpServer : IDisposable
         var lines = new List<string> { $"Total: {history.Count}\n" };
         foreach (var cmd in history)
         {
-            lines.Add($"[{cmd.SentAt:yyyy-MM-dd HH:mm:ss}] {cmd.ClientId} | {cmd.Status}");
+            lines.Add($"[{Fmt(cmd.SentAt)}] {cmd.ClientId} | {cmd.Status}");
             lines.Add($"  Command: {cmd.Command}");
             if (!string.IsNullOrEmpty(cmd.RunAsUser) || cmd.InteractiveSessionId != 0)
                 lines.Add($"  Context: {cmd.RunAsUser}@session{cmd.SessionId} | interactive session{cmd.InteractiveSessionId} ({cmd.InteractiveUser}) | {cmd.DurationMs} ms");

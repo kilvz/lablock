@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
@@ -27,17 +27,19 @@ public static class SessionAgentWorker
     private static string _currentProcess = "";
     private static readonly List<object> KeyBatch = new();
     private static IntPtr _pipeHandle = IntPtr.Zero;
-    private static readonly byte[] ReadBuf = new byte[65536];
+    private static readonly byte[] ReadBuf = new byte[2 * 1024 * 1024]; // 2MB
     private static readonly object PipeWriteLock = new();
 
-    public static void Run()
+    public static void Run(string? pipeName = null)
     {
-        var pipeName = $"\\\\.\\pipe\\LabLockSessionAgent-{Environment.UserName}";
+        pipeName ??= $"\\\\.\\pipe\\LabLockSessionAgent-{Environment.UserName}";
 
         try
         {
-            _pipeHandle = ConnectPipe(pipeName);
-            SendPipe(new { type = "ready" });
+        _pipeHandle = ConnectPipe(pipeName);
+        Log("Connected to pipe, sending ready");
+        SendPipe(new { type = "ready" });
+        Log("Ready sent, starting hook");
         }
         catch (Exception ex)
         {
@@ -56,36 +58,41 @@ public static class SessionAgentWorker
 
         var readThread = new Thread(() =>
         {
+            Log("Read thread started");
             while (true)
             {
                 try
                 {
                     if (!NativeMethods.ReadFile(_pipeHandle, ReadBuf, (uint)ReadBuf.Length, out var bytesRead, IntPtr.Zero))
+                    {
+                        Log($"ReadFile returned FALSE, err={Marshal.GetLastWin32Error()}. Exiting read loop.");
                         break;
+                    }
 
                     if (bytesRead == 0) continue;
 
                     var json = Encoding.UTF8.GetString(ReadBuf, 0, (int)bytesRead);
+                    var dispatchJson = json.Trim();
+                    try { Log($"Dispatch: {dispatchJson.Substring(0, Math.Min(200, dispatchJson.Length))}"); }
+                    catch { }
 
-                    ThreadPool.QueueUserWorkItem(_ =>
+                    try
                     {
-                        try
-                        {
-                            var response = Dispatch(json);
-                            SendPipe(response);
-                        }
-                        catch (Exception ex)
-                        {
-                            var errId = "";
-                            try { using var doc = JsonDocument.Parse(json); errId = doc.RootElement.GetProperty("id").GetString() ?? ""; }
-                            catch { }
-                            try { SendPipe(new { type = "response", id = errId, success = false, error = ex.Message }); }
-                            catch { }
-                        }
-                    });
+                        var response = Dispatch(json);
+                        SendPipe(response);
+                    }
+                    catch (Exception ex)
+                    {
+                        var errId = "";
+                        try { using var doc = JsonDocument.Parse(json); errId = doc.RootElement.GetProperty("id").GetString() ?? ""; }
+                        catch { }
+                        try { SendPipe(new { type = "response", id = errId, success = false, error = ex.Message }); }
+                        catch { }
+                    }
                 }
-                catch
+                catch (Exception ex)
                 {
+                    Log($"Read thread exception: {ex.GetType().Name}: {ex.Message}. Exiting.");
                     break;
                 }
             }
@@ -189,55 +196,47 @@ public static class SessionAgentWorker
 
     private static object ShowMessageBox(JsonElement args)
     {
-        var title = GetStr(args, "title") ?? "LabLock";
+        var title = GetStr(args, "title") ?? "";
         var message = GetStr(args, "message") ?? "No message";
         var buttons = GetStr(args, "buttons") ?? "OK";
         var icon = GetStr(args, "icon") ?? "Information";
+        var topMost = GetBool(args, "topMost") || true;
 
-        uint flags = 0x00000000; // MB_OK
-        if (buttons.Contains("OKCancel")) flags = 0x00000001;
-        else if (buttons.Contains("AbortRetryIgnore")) flags = 0x00000002;
-        else if (buttons.Contains("YesNoCancel")) flags = 0x00000003;
-        else if (buttons.Contains("YesNo")) flags = 0x00000004;
-        else if (buttons.Contains("RetryCancel")) flags = 0x00000005;
+        string? clicked = null;
+        var done = new ManualResetEventSlim();
 
-        if (icon.Contains("Warning") || icon.Contains("Exclamation")) flags |= 0x00000030;
-        else if (icon.Contains("Error") || icon.Contains("Stop") || icon.Contains("Hand")) flags |= 0x00000010;
-        else if (icon.Contains("Question")) flags |= 0x00000020;
-        else flags |= 0x00000040;
-
-        int result = NativeMethods.MessageBox(IntPtr.Zero, message, title, flags);
-        string clicked = result switch
+        var thread = new Thread(() =>
         {
-            1 => "OK", 2 => "Cancel", 3 => "Abort", 4 => "Retry",
-            5 => "Ignore", 6 => "Yes", 7 => "No", 10 => "TryAgain", 11 => "Continue",
-            _ => result.ToString()
-        };
+            var dialog = new ModernMessageDialog(title, message, buttons, icon, topMost);
+            dialog.ResultReady += (_, r) => { clicked = r; done.Set(); };
+            dialog.Show();
+            Application.Run(dialog);
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        done.Wait(TimeSpan.FromMinutes(5));
+        if (!done.IsSet) thread.Interrupt();
 
-        return new { clicked };
+        return new { clicked = clicked ?? "closed" };
     }
 
     private static object ShowInteractiveMessage(JsonElement args)
     {
-        var title = GetStr(args, "title") ?? "LabLock";
+        var title = GetStr(args, "title") ?? "";
         var message = GetStr(args, "message") ?? "";
         var placeholder = GetStr(args, "placeholder") ?? "Type your reply...";
         var allowEmpty = GetBool(args, "allowEmpty");
-        var windowTopMost = GetBool(args, "topMost");
+        var windowTopMost = GetBool(args, "topMost") || true;
 
         string? reply = null;
         var done = new ManualResetEventSlim();
 
         var thread = new Thread(() =>
         {
-            var dialog = new BlockingInputForm(title, message, placeholder, allowEmpty, windowTopMost)
-            {
-                StartPosition = FormStartPosition.CenterScreen,
-                TopMost = windowTopMost
-            };
+            var dialog = new ModernInputDialog(title, message, placeholder, allowEmpty, windowTopMost);
+            dialog.ResultReady += (_, r) => { reply = r; dialog.Close(); done.Set(); };
             dialog.Show();
             dialog.Activate();
-            dialog.ResultReady += (_, r) => { reply = r; dialog.Close(); done.Set(); };
             Application.Run(dialog);
         });
         thread.SetApartmentState(ApartmentState.STA);
@@ -404,14 +403,16 @@ public static class SessionAgentWorker
 
     private static IntPtr ConnectPipe(string pipeName)
     {
+        int lastErr = 0;
         for (int i = 0; i < 30; i++)
         {
             var handle = NativeMethods.CreateFile(pipeName, NativeMethods.GENERIC_READ | NativeMethods.GENERIC_WRITE,
                 0, IntPtr.Zero, NativeMethods.OPEN_EXISTING, 0, IntPtr.Zero);
             if (handle != IntPtr.Zero && handle.ToInt64() != -1) return handle;
+            lastErr = Marshal.GetLastWin32Error();
             Thread.Sleep(1000);
         }
-        throw new Exception($"Cannot connect to pipe: {pipeName}");
+        throw new Exception($"Cannot connect to pipe: {pipeName} (win32err={lastErr})");
     }
 
     private static void SendPipe(object obj)
@@ -483,30 +484,41 @@ public static class SessionAgentWorker
         var psi = new ProcessStartInfo("powershell.exe",
             $"-NoProfile -Command \"{command.Replace("\"", "\\\"")}\"")
         {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
             UseShellExecute = true,
             Verb = "runas",
             WindowStyle = ProcessWindowStyle.Hidden,
             LoadUserProfile = true
         };
 
-        using var proc = Process.Start(psi);
-        if (proc == null) throw new Exception("Failed to start elevated powershell (UAC may have been declined)");
-
-        if (!proc.WaitForExit(timeoutSec * 1000))
+        try
         {
-            try { proc.Kill(true); } catch { }
-            throw new Exception("Elevated command timed out");
+            using var proc = Process.Start(psi);
+            if (proc == null) return new { output = "", exitCode = -1, elevated = true, error = "Failed to start elevated powershell (UAC may have been declined)" };
+
+            if (!proc.WaitForExit(timeoutSec * 1000))
+            {
+                try { proc.Kill(true); } catch { }
+                return new { output = "", exitCode = -1, elevated = true, error = "Elevated command timed out" };
+            }
+
+            return new
+            {
+                output = "",
+                exitCode = proc.ExitCode,
+                elevated = true,
+                error = ""
+            };
         }
-
-        return new
+        catch (Exception ex)
         {
-            output = "",
-            exitCode = proc.ExitCode,
-            elevated = true,
-            note = "Elevated commands run via UAC; output is not captured"
-        };
+            return new
+            {
+                output = "",
+                exitCode = -1,
+                elevated = true,
+                error = $"Failed to start elevated powershell: {ex.Message}"
+            };
+        }
     }
 
     private static string? GetStr(JsonElement el, string key) =>
@@ -516,75 +528,6 @@ public static class SessionAgentWorker
         el.ValueKind != JsonValueKind.Undefined && el.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.True;
 
     private static void Log(string msg) { try { File.AppendAllText(Path.Combine(Path.GetTempPath(), "lablock-agent.log"), $"[{DateTime.UtcNow:O}] {msg}\n"); } catch { } }
-}
-
-public class BlockingInputForm : Form
-{
-    private readonly TextBox _input;
-    private readonly Button _okBtn;
-    private readonly Button _cancelBtn;
-
-    public event EventHandler<string?>? ResultReady;
-
-    public BlockingInputForm(string title, string message, string placeholder, bool allowEmpty, bool topMost)
-    {
-        Text = title;
-        Width = 520;
-        Height = 280;
-        FormBorderStyle = FormBorderStyle.FixedDialog;
-        MaximizeBox = false;
-        MinimizeBox = false;
-        TopMost = topMost;
-        ShowInTaskbar = true;
-        StartPosition = FormStartPosition.CenterScreen;
-
-        var msgLabel = new Label
-        {
-            Text = message,
-            Location = new Point(12, 12),
-            AutoSize = true,
-            MaximumSize = new Size(480, 0)
-        };
-
-        _input = new TextBox
-        {
-            Location = new Point(12, msgLabel.Bottom + 12),
-            Width = 480,
-            Height = 30,
-            PlaceholderText = placeholder
-        };
-
-        _okBtn = new Button
-        {
-            Text = "Send",
-            Location = new Point(336, _input.Bottom + 16),
-            Width = 72,
-            Height = 28,
-            Enabled = allowEmpty
-        };
-        _okBtn.Click += (_, _) => ResultReady?.Invoke(this, _input.Text);
-
-        _cancelBtn = new Button
-        {
-            Text = "Cancel",
-            Location = new Point(418, _input.Bottom + 16),
-            Width = 72,
-            Height = 28
-        };
-        _cancelBtn.Click += (_, _) => ResultReady?.Invoke(this, null);
-
-        _input.TextChanged += (_, _) => _okBtn.Enabled = allowEmpty || _input.Text.Length > 0;
-        _input.KeyDown += (_, e) => { if (e.KeyCode == Keys.Enter) ResultReady?.Invoke(this, _input.Text); };
-
-        Controls.Add(msgLabel);
-        Controls.Add(_input);
-        Controls.Add(_okBtn);
-        Controls.Add(_cancelBtn);
-
-        AcceptButton = _okBtn;
-        CancelButton = _cancelBtn;
-        Load += (_, _) => { Activate(); _input.Focus(); };
-    }
 }
 
 internal static class BlockScreenInstance
@@ -597,9 +540,10 @@ internal static class BlockScreenInstance
         lock (Lock)
         {
             if (_form != null) return;
+            _closeRequested = false;
             var thread = new Thread(() =>
             {
-                _form = new Form
+                var form = new Form
                 {
                     FormBorderStyle = FormBorderStyle.None,
                     WindowState = FormWindowState.Maximized,
@@ -618,9 +562,19 @@ internal static class BlockScreenInstance
                 label.Location = new Point(
                     (Screen.PrimaryScreen!.Bounds.Width - 400) / 2,
                     (Screen.PrimaryScreen.Bounds.Height - 50) / 2);
-                _form.Controls.Add(label);
-                _form.Show();
-                Application.Run(_form);
+                form.Controls.Add(label);
+                lock (Lock)
+                {
+                    _form = form;
+                    if (_closeRequested)
+                    {
+                        _form = null;
+                        form.Dispose();
+                        return;
+                    }
+                }
+                form.Show();
+                Application.Run(form);
             });
             thread.SetApartmentState(ApartmentState.STA);
             thread.Start();
@@ -631,9 +585,13 @@ internal static class BlockScreenInstance
     {
         lock (Lock)
         {
+            _closeRequested = true;
             if (_form == null) return;
-            _form.BeginInvoke(() => { _form.Close(); Application.ExitThread(); });
+            var form = _form;
             _form = null;
+            form.BeginInvoke(() => { form.Close(); Application.ExitThread(); });
         }
     }
+
+    private static bool _closeRequested;
 }

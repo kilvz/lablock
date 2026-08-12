@@ -1,5 +1,49 @@
 # LabLock — AGENTS.md
 
+## This machine IS client 99
+- **Hostname**: ZNC22A82W11-SDK, IP `192.168.5.13`
+- **User**: `Digitalisasi` (session 1, NOT admin — sc stop requires UAC)
+- **LabLock Agent**: installed to `C:\LabLock\LabLock.Client.exe`, Windows Service `LabLockAgent`
+- **MCP tools (lablock_*)** route through the server → interactive pipe → worker. When the pipe is broken, MCP tools time out. Debug the pipe/code DIRECTLY with local bash/PowerShell instead.
+- **Service restart**: needs elevation (`Start-Process -Verb RunAs` for `sc stop/start`)
+- **Service logs** are at `C:\Windows\Temp\lablock-service.log` (readable by SYSTEM only; check via `Start-Process -Verb RunAs` or debug build with user-accessible log path)
+- **Debug log path**: `C:\LabLock\logs\lablock-service.log` and `C:\LabLock\logs\lablock-svc2.log` (user-readable)
+
+## Interactive Pipe Bugs Fixed (Aug 2026)
+1. **Pipe name mismatch**: `GetInteractiveUser()` appended email → `Digitalisasi (slbdorkas@outlook.com)`. Worker used `Environment.UserName` = `Digitalisasi`. Also contained `\` (invalid). Fixed: session-ID based pipe name + explicit argument passing.
+2. **Pipe DACL**: SYSTEM-created pipe had default DACL (SYSTEM+Admins only). Non-admin user worker couldn't open. Fixed: Everyone DACL via `ConvertStringSecurityDescriptorToSecurityDescriptor("D:(A;;GA;;;WD)")`.
+3. **SignalR type mismatch**: Server sent `JsonSerializer.Serialize(payload)` as a STRING. Client handler expected JsonElement/Dictionary but received a string → `GetProperty` threw. Fixed: client handler uses `On<Dictionary<string, JsonElement>>`, server sends `(object)payload` directly.
+4. **Synchronous pipe deadlock**: ReadLoop thread blocked on `ReadFile` while `SendAsync` tried `WriteFile` on the same non-overlapped handle → deadlock. Fixed: eliminated ReadLoop entirely, moved to sequential I/O in `SendAsync` (write request, read responses on same lock).
+5. **JsonElement lifetime**: `JsonDocument` disposed before caller accessed returned `JsonElement` → `ObjectDisposedException`. Fixed: return raw JSON string from `SendAsync`.
+6. **Pipe buffer too small**: Screenshot base64 >64KB truncated in 64K buffer → garbled partial data. Fixed: 2MB pipe buffer + 2MB read buffer.
+
+## Timezone Display Fix (Aug 2026)
+- **Problem**: MCP text output (`lablock_list_clients`, `lablock_get_client`, logs, command history) formatted `LastHeartbeat`/timestamps raw as UTC (e.g. `04:08`), while the lab is on WITA (Asia/Manado, UTC+8) → all times appeared 8h behind the client machines.
+- **Fix**: `McpServer.cs` now has a static `DisplayTimeZone` (env `LABLOCK_DISPLAY_TIMEZONE`, default `Asia/Manado`, fallback custom +08:00 if tzdata missing) + `Fmt(DateTime utc)` helper. All `:yyyy-MM-dd HH:mm:ss` interpolations were replaced with `{Fmt(x)}`.
+- **Dashboard unaffected**: `wwwroot/js/pages/logs.js` already uses `new Date(...).toLocaleTimeString()` (browser-local).
+- **Deploy gotcha**: `pkill -f LabLock.Server`/`pgrep -f LabLock.Server` in a remote command ALSO matches the plink shell's own command line → kills the deploy script mid-chain. Use an anchored pattern `pkill -f '^/opt/lablock/LabLock.Server'` instead.
+
+## Pipe Loop Concurrency Bug (v1.4.26, Aug 2026)
+- **Problem**: Message box (and other interactive tools) timed out — the MCP tool aborted. Log showed `ConnectNamedPipe failed, err=535` followed by `Pipe already connected, reading ready` with no `Got ready`. Worker process was alive but pipe was stuck. After killing worker, the service spawned multiple agents simultaneously (log showed 4 spawns in 3 seconds).
+- **Root cause #1**: `Start()` was not idempotent — calling it while a thread was already running created a second `PipeLoop` thread. Both threads raced on `ConnectNamedPipe`, with one getting `err=535` (already connected) and blocking in `ReadOneMessage()` waiting for a "ready" that was already consumed.
+- **Root cause #2**: `err=535` handling blindly called `ReadOneMessage()` regardless of whether a ready was already received.
+- **Fix**: `Start()` guards against re-entry (`_pipeThread.IsAlive`). Added `_agentReady` boolean to track handshake state; when true, the ready read is skipped. Agent death now resets `_agentReady`, closes pipe handle, and recreates it for clean state.
+- **Deployed**: v1.4.26, uploaded via pscp, manifest registered, server restarted, pushed to client 99. Restart via MCP push works because the update flow runs as SYSTEM.
+- **Non-admin restart**: `Digitalisasi` IS a member of the Administrators group (verified via `net localgroup Administrators`). But the `LabLockAgent` service has a restrictive security descriptor — its SDDL starts with `(D;;DCWP;;;BA)(D;;DCWP;;;BU)` = **Deny SERVICE_CHANGE_CONFIG + SERVICE_STOP to Administrators and Users**. So even an elevated admin CANNOT stop/start the service (`sc stop` → "Access is denied", error 5). Only SYSTEM (SY) can. Use the LabLock update push flow (runs as SYSTEM) to restart, or kill the worker process (watchdog respawns it).
+
+## Elevated Commands Without UAC (v1.4.30, Aug 2026)
+- **Goal**: `lablock_run_elevated_powershell` should run as admin in the user's session WITHOUT a UAC popup.
+- **Problem**: The old worker-side path used `ProcessStartInfo { Verb = "runas", RedirectStandardOutput = true }` — but `Verb=runas` + redirected streams **conflict** in .NET (`Process.Start` throws `InvalidOperationException`), so elevated commands always failed with an empty `{}`. Even if fixed, `runas` pops UAC.
+- **Solution**: The LabLock **service** (runs as SYSTEM) creates a one-off **scheduled task** via `schtasks`:
+  - `/create /tn LabLockElevated-<guid> /tr "powershell ... -File <wrapper.ps1>" /sc once /rl HIGHEST /ru "<DOMAIN\User>" /it /f`
+  - `/rl HIGHEST` = elevated, `/it` = interactive-only (no stored password needed), `/ru <user>` = runs AS the interactive user in their session
+  - Trigger with `/run`, poll for output file, then `/delete`.
+  - Only SYSTEM can create a `/RL HIGHEST` task (verified: non-elevated user gets "Access is denied"); the service IS SYSTEM, so it works.
+- **Output capture**: Task Scheduler `/tr` cannot do shell redirection, so redirection lives INSIDE a wrapper `.ps1`: `try { & '<inner.ps1>' *> '<out>' 2>&1 } catch { $_ | Out-File '<out>' }`. Files go in `C:\Users\Public\lablock-elev\` (world-readable by SYSTEM + user). The wait loop must open the out file with `FileShare.ReadWrite` + retry, because the elevated powershell still holds the handle briefly (else `IOException: being used by another process`).
+- **Where**: `SessionAgentService.RunElevatedPowerShell()` (SYSTEM side); `ConnectionService.ExecuteInteractive` intercepts `run_powershell`+`elevated=true` before it reaches the pipe. `SessionContextService.GetInteractiveUserAccount()` returns plain `DOMAIN\User` (no email suffix).
+- **Verified**: output `"STDOUT-CHECK: elevated-command-ran"`, exit 0, `IsInRole(Administrator)=True`, `net session` success, NO UAC prompt.
+- **Admin note**: `IsInRole(Administrator)` from a non-elevated shell returns **False** even for an admin account (UAC-filtered token) — that is NOT proof of non-admin. Use `net localgroup Administrators` to check membership.
+
 ## Server
 - **Host**: Alpine at `192.168.1.58`, port 5000, OpenRC service `lablock-server`
 - **Binary**: `/opt/lablock/LabLock.Server` (linux-musl-x64 self-contained)

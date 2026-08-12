@@ -37,6 +37,23 @@ public class SessionContextService
         }
     }
 
+    public string GetInteractiveUserAccount()
+    {
+        var sessionId = GetInteractiveSessionId();
+        if (sessionId <= 0)
+            return "";
+
+        var name = TryGetUserFromToken((uint)sessionId, out _);
+        if (!string.IsNullOrEmpty(name))
+            return name;
+
+        var user = QuerySessionInfo((uint)sessionId, NativeMethods.WTSUserName);
+        var domain = QuerySessionInfo((uint)sessionId, NativeMethods.WTSDomainName);
+        if (string.IsNullOrEmpty(user))
+            return "";
+        return string.IsNullOrEmpty(domain) ? user : $"{domain}\\{user}";
+    }
+
     public string GetInteractiveUser()
     {
         var sessionId = GetInteractiveSessionId();
